@@ -1,4 +1,6 @@
 --Task1
+
+--create users and tables
 alter session set "_ORACLE_SCRIPT"=true;
 
 create user development identified by development;
@@ -36,3 +38,43 @@ create table PRODUCTION.MyTable
     constraint mytable_pk primary key(id)
 );
 
+
+--add table by name
+SELECT TABLE_NAME FROM ALL_TABLES WHERE OWNER = 'DEVELOPMENT' AND TABLE_NAME NOt IN (
+SELECT TABLE_NAME FROM All_TABLES WHERE OWNER = 'PRODUCTION');
+
+CREATE OR REPLACE FUNCTION development.table_exists(scheme_name IN VARCHAR, tab_name IN VARCHAR) RETURN BOOLEAN
+IS
+    num NUMBER;
+BEGIN
+    SELECT COUNT(TABLE_NAME) INTO num FROM ALL_TABLES WHERE OWNER = UPPER(scheme_name) AND TABLE_NAME = UPPER(tab_name);
+    IF num > 0 THEN
+        RETURN TRUE;
+    ELSE
+        RETURN FALSE;
+    END IF;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        RETURN FALSE;
+    WHEN OTHERS THEN
+        RETURN FALSE;
+END;
+
+
+CREATE OR REPLACE PROCEDURE compare_schemes(dev_scheme_name IN VARCHAR2, prod_scheme_name IN VARCHAR2)
+IS
+    CURSOR get_table_name IS
+    SELECT TABLE_NAME FROM ALL_TABLES
+    WHERE OWNER = UPPER(dev_scheme_name);
+BEGIN
+    FOR table_name IN get_table_name LOOP
+        IF NOT table_exists(prod_scheme_name, table_name.TABLE_NAME) THEN
+            DBMS_OUTPUT.PUT_LINE('Add table ' || table_name.TABLE_NAME||';');
+            CONTINUE;
+        END IF;
+
+
+    END LOOP;
+END;
+
+call compare_schemes('DEVELOPMENT', 'PRODUCTION');
