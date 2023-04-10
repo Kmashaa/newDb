@@ -39,7 +39,7 @@ create table PRODUCTION.MyTable
 );
 
 
---add table by name
+--compare tables by name
 SELECT TABLE_NAME FROM ALL_TABLES WHERE OWNER = 'DEVELOPMENT' AND TABLE_NAME NOt IN (
 SELECT TABLE_NAME FROM All_TABLES WHERE OWNER = 'PRODUCTION');
 
@@ -78,3 +78,73 @@ BEGIN
 END;
 
 call compare_schemes('DEVELOPMENT', 'PRODUCTION');
+
+
+--compare tables by structure
+SELECT CONSTRAINT_NAME FROM ALL_CONS_COLUMNS WHERE OWNER = 'DEVELOPMENT' AND TABLE_NAME = 'MYTABLE' AND (COLUMN_NAME = 'ID' OR COLUMN_NAME ='MY_DEV_TABLE_ID');
+select * from ALL_CONSTRAINTS;
+
+SELECT * FROM(
+    (SELECT CONSTRAINT_NAME FROM ALL_CONS_COLUMNS WHERE OWNER = 'DEVELOPMENT'
+    AND TABLE_NAME = 'MYTABLE' AND COLUMN_NAME = 'MY_DEV_TABLE_ID'));
+
+CREATE OR REPLACE FUNCTION get_inline_constraint_description(scheme_name IN VARCHAR2, tab_name IN VARCHAR2, col_name IN VARCHAR2) RETURN boolean
+IS
+CURSOR cur_get_inl_constraint IS
+SELECT * FROM(
+    (SELECT CONSTRAINT_NAME FROM ALL_CONS_COLUMNS WHERE OWNER = UPPER(scheme_name)
+    AND TABLE_NAME = UPPER(tab_name) AND COLUMN_NAME = UPPER(col_name)) l
+INNER JOIN
+(SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE, SEARCH_CONDITION FROM ALL_CONSTRAINTS
+WHERE OWNER = UPPER(scheme_name) AND TABLE_NAME = UPPER(tab_name) AND GENERATED = 'GENERATED NAME') r
+ON l.CONSTRAINT_NAME = r.CONSTRAINT_NAME);
+BEGIN
+    for const_name in cur_get_inl_constraint loop
+        DBMS_OUTPUT.PUT_LINE('hi');
+        continue;
+    end loop;
+    return TRUE;
+end;
+
+
+
+CREATE OR REPLACE FUNCTION get_col_description(scheme_name IN VARCHAR2, tab_name IN VARCHAR2, col_name IN VARCHAR2) RETURN VARCHAR2
+IS
+CURSOR cur_get_col IS
+SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, NULLABLE, DATA_DEFAULT
+FROM ALL_TAB_COLUMNS
+WHERE OWNER = UPPER(scheme_name) AND TABLE_NAME = UPPER(tab_name) AND COLUMN_NAME = UPPER(col_name);
+col_descriptioin VARCHAR2(500) := '';
+BEGIN
+
+for rec IN cur_get_col LOOP
+    col_descriptioin := rec.COLUMN_NAME || ' ' || rec.DATA_TYPE;
+
+    IF rec.NULLABLE = 'N' THEN
+        col_descriptioin := col_descriptioin || ' NOT NULL';
+    END IF;
+END LOOP;
+END;
+
+
+CREATE OR REPLACE PROCEDURE compare_table_structure(dev_scheme_name IN VARCHAR2, prod_scheme_name IN VARCHAR2, tab_name IN VARCHAR2)
+IS
+CURSOR cur_get_columns IS
+SELECT * FROM
+((SELECT COLUMN_NAME dev_col_name FROM ALL_TAB_COLUMNS
+WHERE OWNER = UPPER(dev_scheme_name) AND TABLE_NAME = UPPER(tab_name)) dev
+FULL OUTER JOIN
+(SELECT COLUMN_NAME prod_col_name FROM ALL_TAB_COLUMNS
+WHERE OWNER = UPPER(prod_scheme_name) AND TABLE_NAME = UPPER(tab_name)) prod
+ON dev.dev_col_name = prod.prod_col_name);
+BEGIN
+FOR rec IN cur_get_columns LOOP
+    IF rec.dev_col_name IS NULL THEN
+        DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' DROP COLUMN ' || rec.prod_col_name || ';');
+    ELSIF rec.prod_col_name IS NULL THEN
+        DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' ADD COLUMN ' || rec.dev_col_name || ';');
+    END IF;
+END LOOP;
+END;
+
+call compare_table_structure('DEVELOPMENT','PRODUCTION','MYDEVTABLE');
