@@ -72,7 +72,7 @@ BEGIN
             DBMS_OUTPUT.PUT_LINE('Add table ' || table_name.TABLE_NAME||';');
             CONTINUE;
         END IF;
-
+        compare_table_structure(dev_scheme_name, prod_scheme_name, table_name.TABLE_NAME);
 
     END LOOP;
 END;
@@ -88,7 +88,7 @@ SELECT * FROM(
     (SELECT CONSTRAINT_NAME FROM ALL_CONS_COLUMNS WHERE OWNER = 'DEVELOPMENT'
     AND TABLE_NAME = 'MYTABLE' AND COLUMN_NAME = 'MY_DEV_TABLE_ID'));
 
-CREATE OR REPLACE FUNCTION get_inline_constraint_description(scheme_name IN VARCHAR2, tab_name IN VARCHAR2, col_name IN VARCHAR2) RETURN boolean
+CREATE OR REPLACE FUNCTION get_inline_constraint_description(scheme_name IN VARCHAR2, tab_name IN VARCHAR2, col_name IN VARCHAR2) RETURN VARCHAR2
 IS
 CURSOR cur_get_inl_constraint IS
 SELECT * FROM(
@@ -98,32 +98,124 @@ INNER JOIN
 (SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE, SEARCH_CONDITION FROM ALL_CONSTRAINTS
 WHERE OWNER = UPPER(scheme_name) AND TABLE_NAME = UPPER(tab_name) AND GENERATED = 'GENERATED NAME') r
 ON l.CONSTRAINT_NAME = r.CONSTRAINT_NAME);
+constr_description VARCHAR2(300);
 BEGIN
-    for const_name in cur_get_inl_constraint loop
-        DBMS_OUTPUT.PUT_LINE('hi');
-        continue;
-    end loop;
-    return TRUE;
+     FOR rec IN  cur_get_inl_constraint LOOP
+        CASE rec.CONSTRAINT_TYPE
+            WHEN 'P' THEN constr_description := constr_description || ' PRIMARY KEY';
+            WHEN 'U' THEN constr_description := constr_description ||' UNIQUE';
+            WHEN 'C' THEN
+                IF rec.SEARCH_CONDITION NOT LIKE '% IS NOT NULL' THEN
+                    constr_description := constr_description || ' CHECK(' || rec.SEARCH_CONDITION || ')';
+                END IF;
+            ELSE NULL;
+        END CASE;
+    END LOOP;
+RETURN constr_description;
 end;
 
+CREATE OR REPLACE FUNCTION get_sequence_description(scheme_name IN VARCHAR2, seq_name IN VARCHAR2) RETURN VARCHAR2
+IS
+min_val NUMBER;
+max_val NUMBER;
+inc_by NUMBER;
+gen_type VARCHAR2(10);
+seq_description VARCHAR2(300);
+BEGIN
+    SELECT MIN_VALUE, MAX_VALUE, INCREMENT_BY INTO min_val, max_val, inc_by FROM ALL_SEQUENCES WHERE SEQUENCE_NAME = seq_name AND SEQUENCE_OWNER = UPPER(scheme_name);
+    SELECT GENERATION_TYPE INTO gen_type FROM ALL_TAB_IDENTITY_COLS WHERE SEQUENCE_NAME = seq_name AND OWNER = UPPER(scheme_name);
+    -- It makes no difference how to do this or the following.
+    -- seq_description := 'GENERATED ' || gen_type || ' AS IDENTITY' || ' START WITH ' || min_val || ' INCREMENT BY ' || inc_by || ' MAXVALUE ' || max_val;
 
+    seq_description := 'GENERATED ' || gen_type || ' AS IDENTITY';
+    IF min_val != 1 THEN
+        seq_description := seq_description || ' START WITH ' || min_val;
+    END IF;
+    IF inc_by != 1 THEN
+        seq_description := seq_description || ' INCREMENT BY ' || inc_by;
+    END IF;
+    IF max_val != 9999999999999999999999999999 THEN
+        seq_description := seq_description || ' MAXVALUE ' || max_val;
+    END IF;
+    RETURN seq_description;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        BEGIN
+            DBMS_OUTPUT.PUT_LINE('NO_DATA_FOUND in get_sequence_description()');
+            RETURN NULL;
+        END;
+    WHEN OTHERS THEN
+        BEGIN
+            DBMS_OUTPUT.PUT_LINE('Unknown error in get_sequence_description()');
+            RETURN NULL;
+        END;
+END;
 
 CREATE OR REPLACE FUNCTION get_col_description(scheme_name IN VARCHAR2, tab_name IN VARCHAR2, col_name IN VARCHAR2) RETURN VARCHAR2
 IS
-CURSOR cur_get_col IS
-SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, NULLABLE, DATA_DEFAULT
-FROM ALL_TAB_COLUMNS
-WHERE OWNER = UPPER(scheme_name) AND TABLE_NAME = UPPER(tab_name) AND COLUMN_NAME = UPPER(col_name);
-col_descriptioin VARCHAR2(500) := '';
+dat_type VARCHAR2(128);
+is_nullable VARCHAR2(1);
+dat_default LONG;
+dat_precision NUMBER;
+dat_scale NUMBER;
+ch_length NUMBER;
+col_description VARCHAR2(500) := '';
+is_comma_needed NUMBER := 0;
 BEGIN
+    SELECT DATA_TYPE, NULLABLE, DATA_DEFAULT, DATA_PRECISION, DATA_SCALE, CHAR_LENGTH INTO
+    dat_type, is_nullable, dat_default, dat_precision, dat_scale, ch_length
+    FROM ALL_TAB_COLUMNS
+    WHERE OWNER = UPPER(scheme_name) AND TABLE_NAME = UPPER(tab_name) AND COLUMN_NAME = UPPER(col_name);
 
-for rec IN cur_get_col LOOP
-    col_descriptioin := rec.COLUMN_NAME || ' ' || rec.DATA_TYPE;
+    col_description := UPPER(col_name) || ' ' || dat_type;
 
-    IF rec.NULLABLE = 'N' THEN
-        col_descriptioin := col_descriptioin || ' NOT NULL';
+    -- If precision or scale is set.
+    IF dat_precision IS NOT NULL or dat_scale IS NOT NULL THEN
+        col_description := col_description || '(';
+        IF dat_precision IS NOT NULL THEN
+                col_description := col_description || dat_precision;
+                is_comma_needed := 1;
+        END IF;
+
+        IF dat_scale IS NOT NULL THEN
+            IF is_comma_needed = 1 THEN
+                col_description := col_description || ', ';
+            END IF;
+            col_description := col_description || dat_scale || ')';
+        END IF;
     END IF;
-END LOOP;
+
+    -- For CHAR, VARCHAR2, NCHAR, NVARCHAR2.
+    IF ch_length > 0 THEN
+        col_description := col_description || '(' || ch_length || ')';
+    END IF;
+
+    IF dat_default IS NOT NULL THEN
+            IF dat_default LIKE '%.nextval' THEN
+                col_description := col_description || ' ' || get_sequence_description(scheme_name, REGEXP_SUBSTR (dat_default, '(ISEQ\$\$_\d+)'));
+            ELSE
+                col_description := col_description || ' DEFAULT ' || dat_default;
+            END IF;
+    END IF;
+
+    col_description := col_description || get_inline_constraint_description(scheme_name, tab_name, col_name);
+
+    IF is_nullable = 'N' THEN
+        col_description := col_description || ' NOT NULL';
+    END IF;
+
+    RETURN col_description;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        BEGIN
+            DBMS_OUTPUT.PUT_LINE('NO_DATA_FOUND in get_col_description()');
+            RETURN NULL;
+        END;
+    WHEN OTHERS THEN
+        BEGIN
+            DBMS_OUTPUT.PUT_LINE('Unknown error in get_col_description()');
+            RETURN NULL;
+        END;
 END;
 
 
@@ -143,8 +235,12 @@ FOR rec IN cur_get_columns LOOP
         DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' DROP COLUMN ' || rec.prod_col_name || ';');
     ELSIF rec.prod_col_name IS NULL THEN
         DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' ADD COLUMN ' || rec.dev_col_name || ';');
+    ELSIF get_col_description(dev_scheme_name, tab_name, rec.dev_col_name) != get_col_description(prod_scheme_name, tab_name, rec.prod_col_name) THEN
+        DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' MODIFY ' || get_col_description(dev_scheme_name, tab_name, rec.dev_col_name) || ';');
     END IF;
 END LOOP;
 END;
+
+SELECT get_col_description('DEVELOPMENT', 'MYDEVTABLE', 'ID') FROM dual;
 
 call compare_table_structure('DEVELOPMENT','PRODUCTION','MYDEVTABLE');
