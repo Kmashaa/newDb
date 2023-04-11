@@ -244,3 +244,31 @@ END;
 SELECT get_col_description('DEVELOPMENT', 'MYDEVTABLE', 'ID') FROM dual;
 
 call compare_table_structure('DEVELOPMENT','PRODUCTION','MYDEVTABLE');
+
+CREATE OR REPLACE FUNCTION is_table_exists_in_tables_to_create(tab_name IN VARCHAR2) RETURN BOOLEAN
+IS
+    num NUMBER;
+BEGIN
+    SELECT DISTINCT COUNT(TABLE_NAME) INTO num FROM tables_to_create WHERE TABLE_NAME = UPPER(tab_name);
+    IF num > 0 THEN
+        RETURN TRUE;
+    ELSE
+        RETURN FALSE;
+    END IF;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        RETURN FALSE;
+    WHEN OTHERS THEN
+        RETURN FALSE;
+END is_table_exists_in_tables_to_create;
+
+
+CREATE TABLE TABLES_TO_CREATE(
+    tables_to_create_id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    owner VARCHAR2(128),
+    table_name VARCHAR2(128),
+    lvl NUMBER DEFAULT 0,
+    is_cycle NUMBER DEFAULT 0,
+    fk_name VARCHAR2(128),
+    path VARCHAR2(500)
+);
