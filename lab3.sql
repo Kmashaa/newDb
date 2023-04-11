@@ -70,11 +70,14 @@ BEGIN
     FOR table_name IN get_table_name LOOP
         IF NOT table_exists(prod_scheme_name, table_name.TABLE_NAME) THEN
             DBMS_OUTPUT.PUT_LINE('Add table ' || table_name.TABLE_NAME||';');
-            CONTINUE;
-        END IF;
-        compare_table_structure(dev_scheme_name, prod_scheme_name, table_name.TABLE_NAME);
 
+            INSERT INTO TABLES_TO_CREATE(owner, table_name)
+            VALUES(dev_scheme_name, table_name.TABLE_NAME);
+        ELSE
+            compare_table_structure(dev_scheme_name, prod_scheme_name, table_name.TABLE_NAME);
+        END IF;
     END LOOP;
+    create_all_tables(dev_scheme_name);
 END;
 
 call compare_schemes('DEVELOPMENT', 'PRODUCTION');
@@ -245,6 +248,17 @@ SELECT get_col_description('DEVELOPMENT', 'MYDEVTABLE', 'ID') FROM dual;
 
 call compare_table_structure('DEVELOPMENT','PRODUCTION','MYDEVTABLE');
 
+
+CREATE TABLE TABLES_TO_CREATE(
+    tables_to_create_id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    owner VARCHAR2(128),
+    table_name VARCHAR2(128),
+    lvl NUMBER DEFAULT 0,
+    is_cycle NUMBER DEFAULT 0,
+    fk_name VARCHAR2(128),
+    path VARCHAR2(500)
+);
+
 CREATE OR REPLACE FUNCTION is_table_exists_in_tables_to_create(tab_name IN VARCHAR2) RETURN BOOLEAN
 IS
     num NUMBER;
@@ -263,12 +277,210 @@ EXCEPTION
 END is_table_exists_in_tables_to_create;
 
 
-CREATE TABLE TABLES_TO_CREATE(
-    tables_to_create_id NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    owner VARCHAR2(128),
-    table_name VARCHAR2(128),
-    lvl NUMBER DEFAULT 0,
-    is_cycle NUMBER DEFAULT 0,
-    fk_name VARCHAR2(128),
-    path VARCHAR2(500)
+
+CREATE OR REPLACE PROCEDURE update_tables_to_create(schema_name IN VARCHAR2)
+IS
+    CURSOR cur_get_table IS
+    SELECT level, CONNECT_BY_ISCYCLE is_cycle, parent_owner, parent_table, child_owner, child_table, constr_name, SYS_CONNECT_BY_PATH(parent_table, '<-') cycle_path
+    FROM (SELECT pk.OWNER parent_owner, pk.TABLE_NAME parent_table, fk.OWNER child_owner, fk.TABLE_NAME child_table, fk.CONSTRAINT_NAME constr_name
+            FROM ALL_CONSTRAINTS pk
+            INNER JOIN ALL_CONSTRAINTS fk
+            ON pk.OWNER = fk.R_OWNER AND pk.CONSTRAINT_NAME = fk.R_CONSTRAINT_NAME
+            WHERE pk.OWNER = UPPER(schema_name))
+    CONNECT BY NOCYCLE PRIOR child_table = parent_table;
+    tmp_lvl NUMBER := 0;
+BEGIN
+    FOR rec in cur_get_table LOOP
+        IF rec.is_cycle = 1 THEN
+            UPDATE TABLES_TO_CREATE SET owner = rec.child_owner, lvl = rec.level,
+            is_cycle = rec.is_cycle, fk_name = rec.constr_name, path = rec.cycle_path
+            WHERE table_name = rec.child_table;
+            CONTINUE;
+        END IF;
+
+        IF NOT is_table_exists_in_tables_to_create(rec.child_table) THEN
+            CONTINUE;
+        END IF;
+
+        SELECT lvl INTO tmp_lvl FROM TABLES_TO_CREATE WHERE table_name = rec.child_table;
+        IF rec.level > tmp_lvl THEN
+            UPDATE TABLES_TO_CREATE SET owner = rec.child_owner, lvl = rec.level,
+            is_cycle = rec.is_cycle, fk_name = rec.constr_name, path = rec.cycle_path
+            WHERE table_name = rec.child_table;
+        END IF;
+    END LOOP;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+            DBMS_OUTPUT.PUT_LINE('NO_DATA_FOUND in update_tables_to_create()');
+    WHEN OTHERS THEN
+            DBMS_OUTPUT.PUT_LINE('Unknown error in update_tables_to_create()');
+END update_tables_to_create;
+
+
+CREATE OR REPLACE PROCEDURE create_table(schema_name IN VARCHAR2, tab_name IN VARCHAR2)
+IS
+    CURSOR cur_get_col IS
+    SELECT COLUMN_NAME FROM ALL_TAB_COLUMNS
+    WHERE OWNER = UPPER(schema_name) AND TABLE_NAME = UPPER(tab_name);
+    rec cur_get_col%ROWTYPE;
+    buff VARCHAR2(300) := '';
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('CREATE TABLE ' || tab_name || ' (');
+    OPEN cur_get_col;
+    FETCH cur_get_col INTO rec;
+    LOOP
+        buff := get_col_description(schema_name, tab_name, rec.COLUMN_NAME);
+
+        FETCH cur_get_col INTO rec;
+        IF cur_get_col%NOTFOUND THEN
+            DBMS_OUTPUT.PUT_LINE(buff);
+            EXIT;
+        ELSE
+            DBMS_OUTPUT.PUT_LINE(buff || ',');
+            buff := '';
+        END IF;
+    END LOOP;
+    CLOSE cur_get_col;
+
+
+END create_table;
+
+
+CREATE OR REPLACE PROCEDURE create_all_tables(scheme_name IN VARCHAR2)
+IS
+BEGIN
+    update_tables_to_create(scheme_name);
+END create_all_tables;
+
+
+SELECT get_fk_description('DEVELOPMENT', 'FK_MY_TABLE') FROM dual;
+
+CREATE OR REPLACE FUNCTION get_fk_description(schema_name IN VARCHAR2, constr_name IN VARCHAR2) RETURN VARCHAR2
+IS
+    buff VARCHAR2(1000) := 0;
+
+    CURSOR cur_get_col(owner_name VARCHAR2, cons_name VARCHAR2) IS
+    SELECT TABLE_NAME, COLUMN_NAME FROM ALL_CONS_COLUMNS
+    WHERE OWNER = UPPER(owner_name) AND CONSTRAINT_NAME = UPPER(cons_name)
+    ORDER BY POSITION;
+
+    r_schema VARCHAR2(128);
+    r_constr_name VARCHAR(128);
+    del_rule VARCHAR2(9);
+
+    is_write_table_name NUMBER := 1;
+BEGIN
+    SELECT R_OWNER, R_CONSTRAINT_NAME, DELETE_RULE INTO r_schema, r_constr_name, del_rule FROM ALL_CONSTRAINTS
+    WHERE OWNER = UPPER(schema_name) AND CONSTRAINT_NAME = UPPER(constr_name) AND CONSTRAINT_TYPE = 'R'
+    FETCH FIRST 1 ROWS ONLY;
+
+    buff := 'CONSTRAINT ' || constr_name || ' FOREIGN KEY(';
+
+    FOR rec IN cur_get_col(schema_name, constr_name) LOOP
+        buff := buff || rec.COLUMN_NAME || ', ';
+    END LOOP;
+    buff := RTRIM(buff, ', ');
+    buff := buff || ') REFERENCES ';
+
+    FOR rec IN cur_get_col(r_schema, r_constr_name) LOOP
+        IF is_write_table_name = 1 THEN
+            buff := buff || rec.TABLE_NAME || '(';
+            is_write_table_name := 0;
+        END IF;
+        buff := buff || rec.COLUMN_NAME || ', ';
+    END LOOP;
+
+    buff := RTRIM(buff, ', ');
+    buff := buff || ')';
+    IF del_rule != 'NO ACTION' THEN
+        buff := buff || ' ON DELETE ' || del_rule;
+    END IF;
+    RETURN buff;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+            DBMS_OUTPUT.PUT_LINE('NO_DATA_FOUND in get_fk_description()');
+            RETURN NULL;
+    WHEN OTHERS THEN
+            DBMS_OUTPUT.PUT_LINE('Unknown error in get_fk_description()');
+            RETURN NULL;
+END get_fk_description;
+
+
+SELECT get_not_fk_constraint_desription('DEVELOPMENT', 'mydevtabel_pk') FROM dual;
+
+CREATE OR REPLACE FUNCTION get_not_fk_constraint_desription(schema_name IN VARCHAR2, constr_name IN VARCHAR2) RETURN VARCHAR2
+IS
+    CURSOR cur_get_col IS
+    SELECT COLUMN_NAME FROM ALL_CONS_COLUMNS
+    WHERE OWNER = UPPER(schema_name) AND CONSTRAINT_NAME = UPPER(constr_name)
+    ORDER BY POSITION;
+    constr_type VARCHAR2(1);
+    search_cond LONG;
+    buff VARCHAR2(300);
+BEGIN
+    SELECT CONSTRAINT_TYPE, SEARCH_CONDITION INTO constr_type, search_cond FROM ALL_CONSTRAINTS
+    WHERE OWNER = UPPER(schema_name) AND CONSTRAINT_NAME = UPPER(constr_name)
+    FETCH FIRST 1 ROWS ONLY;
+
+    buff := 'CONSTRAINT ' || constr_name;
+
+    CASE constr_type
+        WHEN 'P' THEN
+            BEGIN
+                buff := buff || ' PRIMARY KEY(';
+                for rec in cur_get_col LOOP
+                    buff := buff || rec.COLUMN_NAME || ', ';
+                END LOOP;
+                buff := RTRIM(buff, ', ');
+                buff := buff || ')';
+            END;
+        WHEN 'U' THEN
+            BEGIN
+                buff := buff ||' UNIQUE(';
+                for rec in cur_get_col LOOP
+                    buff := buff || rec.COLUMN_NAME || ', ';
+                END LOOP;
+                buff := RTRIM(buff, ', ');
+                buff := buff || ')';
+            END;
+        WHEN 'C' THEN
+            buff := buff || ' CHECK(' || search_cond || ')';
+    END CASE;
+    RETURN buff;
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+            DBMS_OUTPUT.PUT_LINE('NO_DATA_FOUND in get_not_fk_constraint_desription()');
+            RETURN NULL;
+    WHEN OTHERS THEN
+            DBMS_OUTPUT.PUT_LINE('Unknown error in get_not_fk_constraint_desription()');
+            RETURN NULL;
+END get_not_fk_constraint_desription;
+
+
+CREATE OR REPLACE FUNCTION get_outline_constraints_description(schema_name IN VARCHAR2, tab_name IN VARCHAR2) RETURN VARCHAR2
+IS
+    CURSOR cur_get_constraints IS
+    SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE FROM ALL_CONSTRAINTS
+    WHERE OWNER = UPPER(schema_name) AND TABLE_NAME = UPPER(tab_name) AND GENERATED != 'GENERATED NAME';
+    buff VARCHAR2(5000) := '';
+BEGIN
+    FOR rec in cur_get_constraints LOOP
+        IF rec.CONSTRAINT_TYPE = 'R' THEN
+            buff := buff || get_fk_description(schema_name, rec.CONSTRAINT_NAME) || ',' || CHR(10);
+        ELSE
+            buff := buff || get_not_fk_constraint_desription(schema_name, rec.CONSTRAINT_NAME) || ',' || CHR(10);
+        END IF;
+    END LOOP;
+    buff := RTRIM(buff, ',' || CHR(10));
+    RETURN buff;
+END get_outline_constraints_description;
+
+    CREATE TABLE TMP(
+id NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+my_table_id NUMBER,
+tmp_val NUMBER,
+CONSTRAINT fk_tmp FOREIGN KEY (my_table_id)
+REFERENCES MyTable(id) ON DELETE CASCADE,
+CONSTRAINT unique_tmp_val_my_table_id UNIQUE(tmp_val, my_table_id),
+CONSTRAINT check_tmp_val CHECK(tmp_val > 50)
 );
