@@ -1,4 +1,4 @@
---Task1
+--Task
 
 --create users and tables
 alter session set "_ORACLE_SCRIPT"=true;
@@ -77,11 +77,11 @@ BEGIN
     compare_procedures(dev_scheme_name, prod_scheme_name);
     compare_packages(dev_scheme_name, prod_scheme_name);
     compare_indexes(dev_scheme_name, prod_scheme_name);
-    EXECUTE IMMEDIATE 'TRUNCATE TABLE tables_to_create';
+    --EXECUTE IMMEDIATE 'TRUNCATE TABLE tables_to_create';
 END;
 
 TRUNCATE TABLE tables_to_create;
-call compare_schemes('DEVELOPMENT', 'PRODUCTION');
+call compare_schemes('TEST_DEVELOPMENT', 'PRODUCTION');
 
 
 --compare tables by structure
@@ -279,9 +279,21 @@ EXCEPTION
         RETURN FALSE;
 END table_exists_in_tables_to_create;
 
+SELECT pk.OWNER parent_owner, pk.TABLE_NAME parent_table, fk.OWNER child_owner, fk.TABLE_NAME child_table, fk.CONSTRAINT_NAME constr_name
+            FROM ALL_CONSTRAINTS pk
+            INNER JOIN ALL_CONSTRAINTS fk
+            ON pk.OWNER = fk.R_OWNER AND pk.CONSTRAINT_NAME = fk.R_CONSTRAINT_NAME
+            WHERE pk.OWNER = UPPER('TEST_DEVELOPMENT');
 
+    SELECT level, CONNECT_BY_ISCYCLE is_cycle, parent_owner, parent_table, child_owner, child_table, constr_name, SYS_CONNECT_BY_PATH(parent_table, ' - ') cycle_path
+    FROM (SELECT pk.OWNER parent_owner, pk.TABLE_NAME parent_table, fk.OWNER child_owner, fk.TABLE_NAME child_table, fk.CONSTRAINT_NAME constr_name
+            FROM ALL_CONSTRAINTS pk
+            INNER JOIN ALL_CONSTRAINTS fk
+            ON pk.OWNER = fk.R_OWNER AND pk.CONSTRAINT_NAME = fk.R_CONSTRAINT_NAME
+            WHERE pk.OWNER = UPPER('TEST_DEVELOPMENT'))
+    CONNECT BY NOCYCLE PRIOR child_table = parent_table;
 
-CREATE OR REPLACE PROCEDURE update_tables_to_create(schema_name IN VARCHAR2)
+CREATE OR REPLACE PROCEDURE update_tables_to_create(scheme_name IN VARCHAR2)
 IS
     CURSOR cur_get_table IS
     SELECT level, CONNECT_BY_ISCYCLE is_cycle, parent_owner, parent_table, child_owner, child_table, constr_name, SYS_CONNECT_BY_PATH(parent_table, ' - ') cycle_path
@@ -289,7 +301,7 @@ IS
             FROM ALL_CONSTRAINTS pk
             INNER JOIN ALL_CONSTRAINTS fk
             ON pk.OWNER = fk.R_OWNER AND pk.CONSTRAINT_NAME = fk.R_CONSTRAINT_NAME
-            WHERE pk.OWNER = UPPER(schema_name))
+            WHERE pk.OWNER = UPPER(scheme_name))
     CONNECT BY NOCYCLE PRIOR child_table = parent_table;
     tmp_lvl NUMBER := 0;
 BEGIN
@@ -303,6 +315,7 @@ BEGIN
 
         IF NOT table_exists_in_tables_to_create(rec.child_table) THEN
             CONTINUE;
+            --INSERT INTO TABLES_TO_CREATE(owner,lvl, table_name, fk_name, path,to_create) VALUES (rec.child_owner, rec.level, rec.is_cycle, rec.constr_name, rec.cycle_path, 0);
         END IF;
 
         SELECT lvl INTO tmp_lvl FROM TABLES_TO_CREATE WHERE table_name = rec.child_table;
@@ -317,7 +330,7 @@ EXCEPTION
             DBMS_OUTPUT.PUT_LINE('NO_DATA_FOUND in update_tables_to_create()');
     WHEN OTHERS THEN
             DBMS_OUTPUT.PUT_LINE('Unknown error in update_tables_to_create()');
-END update_tables_to_create;
+END;
 
 
 
@@ -594,6 +607,8 @@ END compare_constraints;
     FROM ALL_SOURCE WHERE OWNER = UPPER('PRODUCTION') AND TYPE = UPPER('FUNCTION')) prod
     ON dev.dev_name = prod.prod_name;
 
+SELECT * FROM ALL_SOURCE WHERE OWNER='DEVELOPMENT';
+
 CREATE OR REPLACE PROCEDURE compare_callables(dev_scheme_name IN VARCHAR2, prod_scheme_name IN VARCHAR2, obj_type IN VARCHAR2)
 IS
 CURSOR cur_get_call IS
@@ -606,7 +621,6 @@ CURSOR cur_get_call IS
     ON dev.dev_name = prod.prod_name;
 BEGIN
     FOR rec IN cur_get_call LOOP
-        --DBMS_OUTPUT.PUT_LINE('DEV name: ' || rec.dev_name ||' PROD NAME: ' || rec.prod_name);
         IF rec.dev_name IS NULL THEN
             DBMS_OUTPUT.PUT_LINE('DROP ' || UPPER(obj_type) || ' ' || UPPER(rec.prod_name) || ';');
         ELSIF rec.prod_name IS NULL THEN
@@ -635,7 +649,6 @@ BEGIN
     IF check_var IS NULL THEN
         RETURN;
     END IF;
-    --DBMS_OUTPUT.PUT_LINE('Check var: ' || check_var);
     DBMS_OUTPUT.PUT_LINE('CREATE OR REPLACE ');
     FOR rec IN get_object
     LOOP
@@ -660,11 +673,6 @@ BEGIN
       RETURN call_text;
 END get_callable_text;
 
-CREATE OR REPLACE FUNCTION ret_num(num NUMBER) RETURN NUMBER
-IS
-BEGIN
-    RETURN num;
-END ret_num;
 
 CREATE OR REPLACE PROCEDURE compare_functions(dev_scheme_name IN VARCHAR2, prod_scheme_name IN VARCHAR2)
 IS
@@ -707,7 +715,25 @@ BEGIN
     RETURN index_string;
 END get_index_string;
 
+SELECT DISTINCT dev_uniqueness, dev_index_name, prod_uniqueness, prod_index_name
+    FROM
+        (SELECT ai.index_name dev_index_name, ai.uniqueness dev_uniqueness, ai.table_name dev_table_name, aic.column_name dev_column_name
+        FROM all_indexes ai
+        INNER JOIN all_ind_columns aic
+        ON ai.index_name = aic.INDEX_NAME AND ai.owner = aic.INDEX_OWNER
+        WHERE ai.owner = UPPER('TEST_DEVELOPMENT')
+        AND GENERATED = 'N') dev
+    FULL OUTER JOIN
+        (SELECT ai.index_name prod_index_name, ai.uniqueness prod_uniqueness, ai.table_name prod_table_name, aic.column_name prod_column_name
+        FROM all_indexes ai
+        INNER JOIN all_ind_columns aic
+        ON ai.index_name = aic.index_name AND ai.owner = aic.index_owner
+        WHERE ai.owner = UPPER('PRODUCTION')
+        AND GENERATED = 'N') prod
+    ON dev.dev_table_name = prod.prod_table_name
+    AND dev.dev_column_name = prod.prod_column_name;
 
+select * from all_indexes;
 CREATE OR REPLACE PROCEDURE compare_indexes(dev_scheme_name VARCHAR2, prod_scheme_name VARCHAR2)
 IS
 CURSOR get_indexes IS
@@ -735,9 +761,9 @@ BEGIN
         IF rec.prod_index_name IS NULL THEN
             buf := buf || 'CREATE ';
             IF rec.dev_uniqueness != 'NONUNIQUE' THEN
-                buf := buf || rec.dev_uniqueness;
+                buf := buf || rec.dev_uniqueness||' ';
             END IF;
-            buf := buf || ' INDEX ' || rec.dev_index_name || get_index_string(dev_scheme_name, rec.dev_index_name) || ';';
+            buf := buf || 'INDEX ' || rec.dev_index_name || get_index_string(dev_scheme_name, rec.dev_index_name) || ';';
             DBMS_OUTPUT.PUT_LINE(buf);
             buf := NULL;
             CONTINUE;
@@ -764,6 +790,7 @@ BEGIN
 END compare_indexes;
 
 call compare_indexes('TEST_DEVELOPMENT', 'PRODUCTION');
+
 
 CREATE OR REPLACE PROCEDURE compare_packages(dev_scheme_name VARCHAR2, prod_scheme_name VARCHAR2)
 IS
