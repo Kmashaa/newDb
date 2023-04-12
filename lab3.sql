@@ -43,7 +43,7 @@ create table PRODUCTION.MyTable
 SELECT TABLE_NAME FROM ALL_TABLES WHERE OWNER = 'DEVELOPMENT' AND TABLE_NAME NOt IN (
 SELECT TABLE_NAME FROM All_TABLES WHERE OWNER = 'PRODUCTION');
 
-CREATE OR REPLACE FUNCTION development.table_exists(scheme_name IN VARCHAR, tab_name IN VARCHAR) RETURN BOOLEAN
+CREATE OR REPLACE FUNCTION development.table_exists(scheme_name IN VARCHAR2, tab_name IN VARCHAR2) RETURN BOOLEAN
 IS
     num NUMBER;
 BEGIN
@@ -59,8 +59,14 @@ EXCEPTION
     WHEN OTHERS THEN
         RETURN FALSE;
 END;
-call compare_schemes('DEVELOPMENT','PRODUCTION');
+
+
+call compare_schemes('TEST_DEVELOPMENT','PRODUCTION');
 call compare_tables('DEVELOPMENT', 'PRODUCTION');
+call compare_functions('DEVELOPMENT', 'PRODUCTION');
+call compare_procedures('DEVELOPMENT', 'PRODUCTION');
+call compare_packages('DEVELOPMENT', 'PRODUCTION');
+call compare_indexes('DEVELOPMENT', 'PRODUCTION');
 
 CREATE OR REPLACE PROCEDURE compare_schemes(dev_scheme_name IN VARCHAR2, prod_scheme_name IN VARCHAR2)
 IS
@@ -68,19 +74,14 @@ IS
     SELECT TABLE_NAME FROM ALL_TABLES
     WHERE OWNER = UPPER(dev_scheme_name);
 BEGIN
-    FOR table_name IN get_table_name LOOP
-        IF NOT table_exists(prod_scheme_name, table_name.TABLE_NAME) THEN
-            DBMS_OUTPUT.PUT_LINE('Add table ' || table_name.TABLE_NAME||';');
-
-            INSERT INTO TABLES_TO_CREATE(owner, table_name)
-            VALUES(dev_scheme_name, table_name.TABLE_NAME);
-        ELSE
-            compare_table_structure(dev_scheme_name, prod_scheme_name, table_name.TABLE_NAME);
-        END IF;
-    END LOOP;
-    create_all_tables(dev_scheme_name);
+    compare_tables(dev_scheme_name, prod_scheme_name);
+    compare_functions(dev_scheme_name, prod_scheme_name);
+    compare_procedures(dev_scheme_name, prod_scheme_name);
+    compare_packages(dev_scheme_name, prod_scheme_name);
+    compare_indexes(dev_scheme_name, prod_scheme_name);
+    EXECUTE IMMEDIATE 'TRUNCATE TABLE tables_to_create';
 END;
-
+TRUNCATE TABLE tables_to_create;
 call compare_schemes('DEVELOPMENT', 'PRODUCTION');
 
 
@@ -235,14 +236,15 @@ WHERE OWNER = UPPER(prod_scheme_name) AND TABLE_NAME = UPPER(tab_name)) prod
 ON dev.dev_col_name = prod.prod_col_name);
 BEGIN
 FOR rec IN cur_get_columns LOOP
-    IF rec.dev_col_name IS NULL THEN
-        DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' DROP COLUMN ' || rec.prod_col_name || ';');
-    ELSIF rec.prod_col_name IS NULL THEN
-        DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' ADD COLUMN ' || rec.dev_col_name || ';');
-    ELSIF get_col_description(dev_scheme_name, tab_name, rec.dev_col_name) != get_col_description(prod_scheme_name, tab_name, rec.prod_col_name) THEN
-        DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' MODIFY ' || get_col_description(dev_scheme_name, tab_name, rec.dev_col_name) || ';');
-    END IF;
-END LOOP;
+        IF rec.dev_col_name IS NULL THEN
+            DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' DROP COLUMN ' || rec.prod_col_name || ';');
+        ELSIF rec.prod_col_name IS NULL THEN
+            DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' ADD COLUMN ' || get_col_description(dev_scheme_name, tab_name, rec.dev_col_name) || ';');
+        ELSIF get_col_description(dev_scheme_name, tab_name, rec.dev_col_name) != get_col_description(prod_scheme_name, tab_name, rec.prod_col_name) THEN
+            -- If there is a bug, you can drop and then re-create column.
+            DBMS_OUTPUT.PUT_LINE('ALTER TABLE ' || tab_name || ' MODIFY ' || get_col_description(dev_scheme_name, tab_name, rec.dev_col_name) || ';');
+        END IF;
+    END LOOP;
 END;
 
 SELECT get_col_description('DEVELOPMENT', 'MYDEVTABLE', 'ID') FROM dual;
@@ -260,7 +262,8 @@ CREATE TABLE TABLES_TO_CREATE(
     path VARCHAR2(500)
 );
 
-CREATE OR REPLACE FUNCTION is_table_exists_in_tables_to_create(tab_name IN VARCHAR2) RETURN BOOLEAN
+
+CREATE OR REPLACE FUNCTION table_exists_in_tables_to_create(tab_name IN VARCHAR2) RETURN BOOLEAN
 IS
     num NUMBER;
 BEGIN
@@ -275,7 +278,7 @@ EXCEPTION
         RETURN FALSE;
     WHEN OTHERS THEN
         RETURN FALSE;
-END is_table_exists_in_tables_to_create;
+END table_exists_in_tables_to_create;
 
 
 
@@ -299,7 +302,7 @@ BEGIN
             CONTINUE;
         END IF;
 
-        IF NOT is_table_exists_in_tables_to_create(rec.child_table) THEN
+        IF NOT table_exists_in_tables_to_create(rec.child_table) THEN
             CONTINUE;
         END IF;
 
@@ -316,6 +319,7 @@ EXCEPTION
     WHEN OTHERS THEN
             DBMS_OUTPUT.PUT_LINE('Unknown error in update_tables_to_create()');
 END update_tables_to_create;
+
 
 
 CREATE OR REPLACE PROCEDURE create_table(schema_name IN VARCHAR2, tab_name IN VARCHAR2, is_create_fk_constr IN NUMBER)
@@ -366,7 +370,7 @@ END create_all_tables;
 
 SELECT get_fk_description('DEVELOPMENT', 'FK_MY_TABLE') FROM dual;
 
-CREATE OR REPLACE FUNCTION get_fk_description(schema_name IN VARCHAR2, constr_name IN VARCHAR2) RETURN VARCHAR2
+CREATE OR REPLACE FUNCTION get_fk_description(scheme_name IN VARCHAR2, constr_name IN VARCHAR2) RETURN VARCHAR2
 IS
     buff VARCHAR2(1000) := 0;
 
@@ -382,12 +386,12 @@ IS
     is_write_table_name NUMBER := 1;
 BEGIN
     SELECT R_OWNER, R_CONSTRAINT_NAME, DELETE_RULE INTO r_schema, r_constr_name, del_rule FROM ALL_CONSTRAINTS
-    WHERE OWNER = UPPER(schema_name) AND CONSTRAINT_NAME = UPPER(constr_name) AND CONSTRAINT_TYPE = 'R'
+    WHERE OWNER = UPPER(scheme_name) AND CONSTRAINT_NAME = UPPER(constr_name) AND CONSTRAINT_TYPE = 'R'
     FETCH FIRST 1 ROWS ONLY;
 
     buff := 'CONSTRAINT ' || constr_name || ' FOREIGN KEY(';
 
-    FOR rec IN cur_get_col(schema_name, constr_name) LOOP
+    FOR rec IN cur_get_col(scheme_name, constr_name) LOOP
         buff := buff || rec.COLUMN_NAME || ', ';
     END LOOP;
     buff := RTRIM(buff, ', ');
@@ -416,21 +420,20 @@ EXCEPTION
             RETURN NULL;
 END get_fk_description;
 
-
 SELECT get_not_fk_constraint_desription('DEVELOPMENT', 'mydevtabel_pk') FROM dual;
 
-CREATE OR REPLACE FUNCTION get_not_fk_constraint_desription(schema_name IN VARCHAR2, constr_name IN VARCHAR2) RETURN VARCHAR2
+CREATE OR REPLACE FUNCTION get_not_fk_constraint_desription(scheme_name IN VARCHAR2, constr_name IN VARCHAR2) RETURN VARCHAR2
 IS
     CURSOR cur_get_col IS
     SELECT COLUMN_NAME FROM ALL_CONS_COLUMNS
-    WHERE OWNER = UPPER(schema_name) AND CONSTRAINT_NAME = UPPER(constr_name)
+    WHERE OWNER = UPPER(scheme_name) AND CONSTRAINT_NAME = UPPER(constr_name)
     ORDER BY POSITION;
     constr_type VARCHAR2(1);
     search_cond LONG;
     buff VARCHAR2(300);
 BEGIN
     SELECT CONSTRAINT_TYPE, SEARCH_CONDITION INTO constr_type, search_cond FROM ALL_CONSTRAINTS
-    WHERE OWNER = UPPER(schema_name) AND CONSTRAINT_NAME = UPPER(constr_name)
+    WHERE OWNER = UPPER(scheme_name) AND CONSTRAINT_NAME = UPPER(constr_name)
     FETCH FIRST 1 ROWS ONLY;
 
     buff := 'CONSTRAINT ' || constr_name;
@@ -488,7 +491,7 @@ BEGIN
     RETURN buff;
 END get_outline_constraints_description;
 
-    CREATE TABLE TMP(
+CREATE TABLE TMP(
 id NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
 my_table_id NUMBER,
 tmp_val NUMBER,
@@ -504,19 +507,19 @@ CREATE TABLE SIMPLE(
 id NUMBER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY
 );
 
-CREATE OR REPLACE FUNCTION get_outline_constraint(schema_name IN VARCHAR2, constr_name IN VARCHAR2) RETURN VARCHAR2
+CREATE OR REPLACE FUNCTION get_outline_constraint(scheme_name IN VARCHAR2, constr_name IN VARCHAR2) RETURN VARCHAR2
 IS
 constr_type VARCHAR2(1);
 BEGIN
 
     SELECT CONSTRAINT_TYPE INTO constr_type FROM ALL_CONSTRAINTS
-    WHERE OWNER = UPPER(schema_name) AND CONSTRAINT_NAME = UPPER(constr_name)
+    WHERE OWNER = UPPER(scheme_name) AND CONSTRAINT_NAME = UPPER(constr_name)
     FETCH FIRST 1 ROWS ONLY;
 
     IF constr_type = 'R' THEN
-        RETURN get_fk_description(schema_name, constr_name);
+        RETURN get_fk_description(scheme_name, constr_name);
     ELSE
-        RETURN get_not_fk_constraint_desription(schema_name, constr_name);
+        RETURN get_not_fk_constraint_desription(scheme_name, constr_name);
     END IF;
 
 EXCEPTION
@@ -528,6 +531,7 @@ EXCEPTION
             RETURN NULL;
 END get_outline_constraint;
 
+SELECT get_outline_constraints_description('DEVELOPMENT', 'TMP') FROM dual;
 
 CREATE OR REPLACE PROCEDURE compare_outline_constraints(dev_scheme_name IN VARCHAR2, prod_scheme_name IN VARCHAR2, tab_name IN VARCHAR2)
 IS
@@ -606,7 +610,7 @@ BEGIN
         ELSIF rec.prod_name IS NULL THEN
             add_object(dev_scheme_name, obj_type, rec.dev_name);
         ELSIF get_callable_text(dev_scheme_name, obj_type, rec.dev_name) != get_callable_text(prod_scheme_name, obj_type, rec.prod_name) THEN
-            DBMS_OUTPUT.PUT_LINE('DROP ' || UPPER(obj_type) || UPPER(rec.prod_name) || ';');
+            DBMS_OUTPUT.PUT_LINE('DROP ' || UPPER(obj_type) || ' ' || UPPER(rec.prod_name) || ';');
             add_object(dev_scheme_name, obj_type, rec.dev_name);
         END IF;
     END LOOP;
@@ -671,3 +675,121 @@ IS
 BEGIN
     compare_callables(dev_scheme_name, prod_scheme_name, 'PROCEDURE');
 END compare_procedures;
+
+CREATE OR REPLACE FUNCTION get_index_string(scheme_name VARCHAR2, ind_name VARCHAR2) RETURN VARCHAR2
+IS
+CURSOR get_index IS
+    SELECT all_ind_col.index_name, all_ind_col.table_name,
+            all_ind_col.column_name, all_ind_col.column_position, all_ind.uniqueness
+    FROM all_ind_columns all_ind_col
+    INNER JOIN all_indexes all_ind
+    ON all_ind.index_name = all_ind_col.index_name AND all_ind.owner = all_ind_col.index_owner
+    WHERE all_ind_col.index_owner = UPPER(scheme_name)
+    AND all_ind_col.index_name = UPPER(ind_name)
+    ORDER BY all_ind_col.column_position;
+
+index_rec get_index%ROWTYPE;
+index_string VARCHAR2(200);
+BEGIN
+    OPEN get_index;
+    FETCH get_index INTO index_rec;
+    index_string := index_string || ' ' || index_rec.table_name || '(';
+    WHILE get_index%FOUND
+    LOOP
+        index_string := index_string || index_rec.column_name || ', ';
+        FETCH get_index INTO index_rec;
+    END LOOP;
+    CLOSE get_index;
+    index_string := RTRIM(index_string, ', ');
+    index_string := index_string || ')';
+    RETURN index_string;
+END get_index_string;
+
+
+CREATE OR REPLACE PROCEDURE compare_indexes(dev_scheme_name VARCHAR2, prod_scheme_name VARCHAR2)
+IS
+CURSOR get_indexes IS
+    SELECT DISTINCT dev_uniqueness, dev_index_name, prod_uniqueness, prod_index_name
+    FROM
+        (SELECT ai.index_name dev_index_name, ai.uniqueness dev_uniqueness, ai.table_name dev_table_name, aic.column_name dev_column_name
+        FROM all_indexes ai
+        INNER JOIN all_ind_columns aic
+        ON ai.index_name = aic.INDEX_NAME AND ai.owner = aic.INDEX_OWNER
+        WHERE ai.owner = UPPER(dev_scheme_name)
+        AND GENERATED = 'N') dev
+    FULL OUTER JOIN
+        (SELECT ai.index_name prod_index_name, ai.uniqueness prod_uniqueness, ai.table_name prod_table_name, aic.column_name prod_column_name
+        FROM all_indexes ai
+        INNER JOIN all_ind_columns aic
+        ON ai.index_name = aic.index_name AND ai.owner = aic.index_owner
+        WHERE ai.owner = UPPER(prod_scheme_name)
+        AND GENERATED = 'N') prod
+    ON dev.dev_table_name = prod.prod_table_name
+    AND dev.dev_column_name = prod.prod_column_name;
+    buf VARCHAR2(500);
+BEGIN
+    FOR rec IN get_indexes
+    LOOP
+        IF rec.prod_index_name IS NULL THEN
+            buf := buf || 'CREATE ';
+            IF rec.dev_uniqueness != 'NONUNIQUE' THEN
+                buf := buf || rec.dev_uniqueness;
+            END IF;
+            buf := buf || ' INDEX ' || rec.dev_index_name || get_index_string(dev_scheme_name, rec.dev_index_name) || ';';
+            DBMS_OUTPUT.PUT_LINE(buf);
+            buf := NULL;
+            CONTINUE;
+        END IF;
+
+        IF rec.dev_index_name IS NULL THEN
+            DBMS_OUTPUT.PUT_LINE('DROP INDEX ' || rec.prod_index_name || ';');
+            CONTINUE;
+        END IF;
+        IF get_index_string(dev_scheme_name, rec.dev_index_name)
+            !=
+            get_index_string(prod_scheme_name, rec.prod_index_name)
+            OR rec.dev_uniqueness != rec.prod_uniqueness THEN
+            DBMS_OUTPUT.PUT_LINE('DROP INDEX ' || rec.prod_index_name || ';');
+            buf := buf || 'CREATE ';
+            IF rec.dev_uniqueness != 'NONUNIQUE' THEN
+                buf := buf || rec.dev_uniqueness;
+            END IF;
+            buf := buf || ' INDEX ' || rec.dev_index_name || get_index_string(dev_scheme_name, rec.dev_index_name) || ';';
+            DBMS_OUTPUT.PUT_LINE(buf);
+            buf := NULL;
+        END IF;
+    END LOOP;
+END compare_indexes;
+
+call compare_indexes('DEVELOPMENT', 'PRODUCTION');
+
+CREATE INDEX tmp_val_ind ON TMP(tmp_val);
+
+CREATE OR REPLACE PROCEDURE compare_packages(dev_scheme_name VARCHAR2, prod_scheme_name VARCHAR2)
+IS
+CURSOR get_package_names IS
+    SELECT dev_name, prod_name
+    FROM
+        (SELECT object_name dev_name FROM all_objects
+        WHERE owner = UPPER(dev_scheme_name) AND object_type = 'PACKAGE') dev
+    FULL JOIN
+        (SELECT object_name prod_name FROM all_objects
+        WHERE owner = UPPER(prod_scheme_name) AND object_type = 'PACKAGE') prod
+    ON dev.dev_name = prod.prod_name;
+BEGIN
+    FOR rec IN get_package_names
+    LOOP
+        IF rec.prod_name IS NULL THEN
+            add_object(dev_scheme_name, 'PACKAGE', rec.dev_name);
+            add_object(dev_scheme_name, 'PACKAGE BODY', rec.dev_name);
+            CONTINUE;
+        END IF ;
+        IF rec.dev_name IS NULL THEN
+            DBMS_OUTPUT.PUT_LINE('DROP PACKAGE ' || rec.prod_name || ';');
+            CONTINUE;
+        END IF;
+    END LOOP;
+END compare_packages;
+
+call compare_packages('DEVELOPMENT','PRODUCTION');
+
