@@ -59,7 +59,8 @@ EXCEPTION
     WHEN OTHERS THEN
         RETURN FALSE;
 END;
-
+call compare_schemes('DEVELOPMENT','PRODUCTION');
+call compare_tables('DEVELOPMENT', 'PRODUCTION');
 
 CREATE OR REPLACE PROCEDURE compare_schemes(dev_scheme_name IN VARCHAR2, prod_scheme_name IN VARCHAR2)
 IS
@@ -578,3 +579,95 @@ BEGIN
     END LOOP;
     create_all_tables(dev_scheme_name);
 END compare_tables;
+
+    SELECT * FROM
+    (SELECT NAME dev_name, UPPER(TRIM(' ' FROM (TRANSLATE(text, CHR(10) || CHR(13), ' ')))) dev_text
+    FROM ALL_SOURCE WHERE OWNER = UPPER('DEVELOPMENT') AND TYPE = UPPER('FUNCTION')) dev
+    FULL OUTER JOIN
+    (SELECT NAME prod_name, UPPER(TRIM(' ' FROM (TRANSLATE(text, CHR(10) || CHR(13), ' ')))) prod_text
+    FROM ALL_SOURCE WHERE OWNER = UPPER('PRODUCTION') AND TYPE = UPPER('FUNCTION')) prod
+    ON dev.dev_name = prod.prod_name;
+
+CREATE OR REPLACE PROCEDURE compare_callables(dev_scheme_name IN VARCHAR2, prod_scheme_name IN VARCHAR2, obj_type IN VARCHAR2)
+IS
+CURSOR cur_get_call IS
+    SELECT * FROM
+    (SELECT DISTINCT NAME dev_name
+    FROM ALL_SOURCE WHERE OWNER = UPPER(dev_scheme_name) AND TYPE = UPPER(obj_type)) dev
+    FULL JOIN
+    (SELECT DISTINCT NAME prod_name
+    FROM ALL_SOURCE WHERE OWNER = UPPER(prod_scheme_name) AND TYPE = UPPER(obj_type)) prod
+    ON dev.dev_name = prod.prod_name;
+BEGIN
+    FOR rec IN cur_get_call LOOP
+        DBMS_OUTPUT.PUT_LINE('DEV name: ' || rec.dev_name ||' PROD NAME: ' || rec.prod_name);
+        IF rec.dev_name IS NULL THEN
+            DBMS_OUTPUT.PUT_LINE('DROP ' || UPPER(obj_type) || ' ' || UPPER(rec.prod_name) || ';');
+        ELSIF rec.prod_name IS NULL THEN
+            add_object(dev_scheme_name, obj_type, rec.dev_name);
+        ELSIF get_callable_text(dev_scheme_name, obj_type, rec.dev_name) != get_callable_text(prod_scheme_name, obj_type, rec.prod_name) THEN
+            DBMS_OUTPUT.PUT_LINE('DROP ' || UPPER(obj_type) || UPPER(rec.prod_name) || ';');
+            add_object(dev_scheme_name, obj_type, rec.dev_name);
+        END IF;
+    END LOOP;
+END compare_callables;
+
+call compare_callables('DEVELOPMENT', 'PRODUCTION', 'FUNCTION');
+
+CREATE OR REPLACE PROCEDURE add_object(dev_scheme_name VARCHAR2, object_type VARCHAR2, object_name VARCHAR2)
+IS
+CURSOR get_object IS
+    SELECT TRIM(' ' FROM (TRANSLATE(text, CHR(10) || CHR(13), ' '))) AS obj_text
+    FROM all_source
+    WHERE owner = UPPER(dev_scheme_name)
+    AND name = UPPER(object_name) AND type = UPPER(object_type);
+check_var VARCHAR2(1000);
+BEGIN
+    OPEN get_object;
+    FETCH get_object INTO check_var;
+    CLOSE get_object;
+    IF check_var IS NULL THEN
+        RETURN;
+    END IF;
+    DBMS_OUTPUT.PUT_LINE('Check var: ' || check_var);
+    DBMS_OUTPUT.PUT_LINE('CREATE OR REPLACE ');
+    FOR rec IN get_object
+    LOOP
+        DBMS_OUTPUT.PUT_LINE(rec.obj_text);
+    END LOOP;
+END add_object;
+
+
+CREATE OR REPLACE FUNCTION get_callable_text(scheme_name IN VARCHAR2, obj_type IN VARCHAR2, obj_name IN VARCHAR2) RETURN VARCHAR2
+IS
+    CURSOR cur_get_text IS
+        SELECT UPPER(TRIM(' ' FROM (TRANSLATE(text, CHR(10) || CHR(13), ' ')))) obj_text
+        FROM ALL_SOURCE
+        WHERE OWNER = UPPER(scheme_name) AND NAME = UPPER(obj_name)
+        AND TYPE = UPPER(obj_type) AND TEXT != chr(10);
+
+    call_text VARCHAR2(32000) := '';
+BEGIN
+      FOR rec in cur_get_text LOOP
+        call_text := call_text || rec.obj_text;
+      END LOOP;
+      RETURN call_text;
+END get_callable_text;
+
+CREATE OR REPLACE FUNCTION ret_num(num NUMBER) RETURN NUMBER
+IS
+BEGIN
+    RETURN num;
+END ret_num;
+
+CREATE OR REPLACE PROCEDURE compare_functions(dev_scheme_name IN VARCHAR2, prod_scheme_name IN VARCHAR2)
+IS
+BEGIN
+    compare_callables(dev_scheme_name, prod_scheme_name, 'FUNCTION');
+END compare_functions;
+
+CREATE OR REPLACE PROCEDURE compare_procedures(dev_scheme_name IN VARCHAR2, prod_scheme_name IN VARCHAR2)
+IS
+BEGIN
+    compare_callables(dev_scheme_name, prod_scheme_name, 'PROCEDURE');
+END compare_procedures;
