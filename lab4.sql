@@ -7,8 +7,10 @@ CREATE OR REPLACE PACKAGE json_parser AS
     FUNCTION parse_all_or_distinct(json_select IN JSON_OBJECT_T) RETURN VARCHAR2;
     FUNCTION parse_select(json_select IN JSON_OBJECT_T) RETURN VARCHAR2;
     FUNCTION parse_json(json_str IN VARCHAR2) RETURN VARCHAR2;
-        FUNCTION parse_cols(json_cols IN JSON_ARRAY_T, tab_name IN VARCHAR2) RETURN VARCHAR2;
-        FUNCTION parse_tables(json_tables IN JSON_ARRAY_T) RETURN VARCHAR2;
+    FUNCTION parse_cols(json_cols IN JSON_ARRAY_T, tab_name IN VARCHAR2) RETURN VARCHAR2;
+    FUNCTION parse_tables(json_tables IN JSON_ARRAY_T) RETURN VARCHAR2;
+    FUNCTION parse_from(json_from IN JSON_ARRAY_T) RETURN VARCHAR2;
+            FUNCTION parse_tab_name_or_select(table_obj IN JSON_OBJECT_T) RETURN VARCHAR2;
     FUNCTION read(dir VARCHAR2, fname VARCHAR2) RETURN VARCHAR2;
 END json_parser;
 
@@ -19,7 +21,7 @@ CREATE OR REPLACE PACKAGE BODY json_parser AS
     IS
         buff VARCHAR2(10000);
     BEGIN
-        buff := 'SELECT ';
+                buff := 'SELECT ';
         IF json_select.has('all_or_distinct') THEN
             buff := buff || parse_all_or_distinct(json_select);
         END IF;
@@ -29,6 +31,17 @@ CREATE OR REPLACE PACKAGE BODY json_parser AS
         END IF;
 
         buff := buff || ' ' || parse_tables(json_select.get_array('tables'));
+
+        IF NOT json_select.has('from') THEN
+            RAISE_APPLICATION_ERROR(-20006, 'Error in parse_select(). There is not "from" section');
+        END IF;
+
+        buff := buff || CHR(10) || 'FROM ' || parse_from(json_select.get_array('from')) || CHR(10);
+--         IF NOT json_select.has('from') THEN
+--             RAISE_APPLICATION_ERROR(-20006, 'Error in parse_select(). There is not "from" section');
+--         END IF;
+--
+--         buff := buff || CHR(10) || 'FROM ' || parse_from(json_select.get_array('from')) || CHR(10);
         RETURN buff;
     END parse_select;
 
@@ -80,7 +93,45 @@ CREATE OR REPLACE PACKAGE BODY json_parser AS
         RETURN RTRIM(buff, ', ');
     END parse_tables;
 
+    FUNCTION parse_tab_name_or_select(table_obj IN JSON_OBJECT_T) RETURN VARCHAR2
+    IS
+        buff VARCHAR2(1000);
+        is_as BOOLEAN := FALSE;
+    BEGIN
+        IF table_obj.has('table_name') AND table_obj.get_string('table_name') IS NOT NULL AND
+          table_obj.has('select') AND table_obj.get_object('select') IS NOT NULL THEN
+            RAISE_APPLICATION_ERROR(-20007, 'Error in parse_tab_name_or_select(). There is "table_name" and "select" sections');
+        END IF;
 
+        is_as := table_obj.has('as');
+        IF table_obj.has('table_name') AND table_obj.get_string('table_name') IS NOT NULL THEN
+            buff := buff || table_obj.get_string('table_name');
+            IF is_as THEN
+                buff := buff || ' ' || table_obj.get_string('as');
+            END IF;
+        ELSIF table_obj.has('select') AND table_obj.get_object('select') IS NOT NULL THEN
+            buff := buff || '(' || parse_select(table_obj.get_object('select')) || ') ';
+            IF is_as THEN
+                buff := buff || table_obj.get_string('as');
+            END IF;
+        ELSE
+            RAISE_APPLICATION_ERROR(-20008, 'Error in parse_tab_name_or_select(). UNREACHABLE!');
+        END IF;
+
+        RETURN buff;
+    END parse_tab_name_or_select;
+
+    FUNCTION parse_from(json_from IN JSON_ARRAY_T) RETURN VARCHAR2
+    IS
+        buff VARCHAR2(10000);
+        table_obj JSON_OBJECT_T;
+    BEGIN
+        FOR i IN 0..json_from.get_size - 1 LOOP
+            table_obj := TREAT(json_from.get(i) AS JSON_OBJECT_T);
+            buff := buff || parse_tab_name_or_select(table_obj) || ', ';
+        END LOOP;
+        RETURN RTRIM(buff, ', ');
+    END parse_from;
 
     FUNCTION read(dir VARCHAR2, fname VARCHAR2) RETURN VARCHAR2
     IS
