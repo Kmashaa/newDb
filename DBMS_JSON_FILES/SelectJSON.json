@@ -1,80 +1,48 @@
 {
     "select": {
-        "all_or_distinct": "DISTINCT",
         "tables": [ {
-            "table_name": "table_name",
+            "table_name": null,
             "cols": [
-                {"col_name": "col_name", "as": "col"},
-                {"col_name": "col_name2"},
-                {"col_name": "col_name3", "as": null}
-            ]
-            },
-            {
-            "table_name": "table2_name",
-            "cols": [
-                {"col_name": "col_name", "as": "col"},
-                {"col_name": "col_name2"},
-                {"col_name": "col_name3", "as": null}
+                {"col_name": "*", "as":null}
             ]
             }
         ],
-        "from": [{"table_name": "table_name", "select":null, "as": "tab_name"},
-                 {"table_name": "table_name2", "select":null, "as": "tab_name2"}],
+        "from": [{"table_name": "t1",  "as":null}],
         "where": [
-            {"post_and_or_operator": "AND",
-             "lhs_tab_name": "lhs_tab_name_or_null",
-             "lhs_col_name_or_val": "lhs_col_name_or_val",
-             "rhs_tab_name": "rhs_tab_name_or_null",
-             "rhs_col_name_or_val": "rhs_col_name_or_val",
+            {"post_and_or_operator":null,
+             "lhs_tab_name": "t1",
+             "lhs_col_name_or_val": "id",
+             "rhs_tab_name":null,
+             "rhs_col_name_or_val": {"select": {
+                "tables": [{
+                    "table_name": null,
+                    "cols":[
+                        {"col_name": "id"}
+                    ]}
+                ],
+                "from": [{"table_name": "t2"}],
+                "where": [
+        {"post_and_or_operator":"AND",
+                    "lhs_tab_name":null,
+                    "lhs_col_name_or_val": "num",
+                    "rhs_tab_name": null,
+                    "rhs_col_name_or_val": "2",
+                    "for_between_tab_name": null,
+                    "for_between_col_name_or_val": 4,
+                    "comp_operator": "BETWEEN"},
+                    {"post_and_or_operator": null,
+                    "lhs_tab_name":null,
+                    "lhs_col_name_or_val": "val",
+                    "rhs_tab_name": null,
+                    "rhs_col_name_or_val": "'%a%'",
+                    "for_between_tab_name": null,
+                    "for_between_col_name_or_val": null,
+                    "comp_operator": "like"}
+                ]
+             }},
              "for_between_tab_name": null,
              "for_between_col_name_or_val": null,
-             "comp_operator": "<"},
-             {"post_and_or_operator": "OR",
-             "lhs_tab_name": "lhs_tab",
-             "lhs_col_name_or_val": "lhs",
-             "rhs_tab_name": "rhs_tab",
-             "rhs_col_name_or_val": "rhs",
-             "for_between_tab_name": null,
-             "for_between_col_name_or_val": null,
-             "comp_operator": "NOT EXISTS"},
-             {"post_and_or_operator":null,
-             "lhs_tab_name": "lhs_tab",
-             "lhs_col_name_or_val": "lhs",
-             "rhs_tab_name": "rhs_tab",
-             "rhs_col_name_or_val": "rhs",
-             "for_between_tab_name": null,
-             "for_between_col_name_or_val": "5",
-             "comp_operator": "BETWEEN"}
-        ],
-        "join": [
-            {"type": "LEFT",
-             "rhs": {"table_name": "tab_name", "select":null, "as": "as_name"},
-             "on":[
-                {"post_and_or_operator": "AND",
-                 "lhs_tab_name": "lhs_tab_name_or_null",
-                 "lhs_col_name_or_val": "lhs_col_name_or_val",
-                 "rhs_tab_name": "rhs_tab_name_or_null",
-                 "rhs_col_name_or_val": "rhs_col_name_or_val",
-                 "for_between_tab_name": null,
-                 "for_between_col_name_or_val": null,
-                 "comp_operator": "<"},
-                 {"post_and_or_operator": "OR",
-                 "lhs_tab_name": "lhs_tab",
-                 "lhs_col_name_or_val": "lhs",
-                 "rhs_tab_name": "rhs_tab",
-                 "rhs_col_name_or_val": "rhs",
-                 "for_between_tab_name": null,
-                 "for_between_col_name_or_val": null,
-                 "comp_operator": "NOT EXISTS"},
-                 {"post_and_or_operator":null,
-                 "lhs_tab_name": "lhs_tab",
-                 "lhs_col_name_or_val": "lhs",
-                 "rhs_tab_name": "rhs_tab",
-                 "rhs_col_name_or_val": "rhs",
-                 "for_between_tab_name": null,
-                 "for_between_col_name_or_val": "5",
-                 "comp_operator": "BETWEEN"}
-             ]}
-        ]  
+             "comp_operator": "IN"}
+        ]
     }
 }
